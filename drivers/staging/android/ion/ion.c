@@ -765,18 +765,21 @@ repeat:
 	}
 
 	mutex_lock(&client->lock);
-	if (grab_handle)
-		ion_handle_get(handle);
 	ret = ion_handle_add(client, handle);
 	ion_client_buf_add(heap, client, len);
+	if (!ret && grab_handle)
+		ion_handle_get(handle);
 	mutex_unlock(&client->lock);
+	end = sched_clock();
 	if (ret) {
 		ion_handle_put(handle);
 		handle = ERR_PTR(ret);
 		IONMSG("%s ion handle add failed %d.\n", __func__, ret);
+	} else {
+		handle->dbg.user_ts = end;
+		do_div(handle->dbg.user_ts, 1000000);
+		memcpy(buffer->alloc_dbg, client->dbg_name, ION_MM_DBG_NAME_LEN);
 	}
-
-	end = sched_clock();
 
 	if (end - start > 100000000ULL) {/* unit is ns */
 		IONMSG("warn: ion alloc buffer size: %zu time: %lld ns\n",
@@ -789,10 +792,6 @@ repeat:
 #ifdef CONFIG_MTK_ION
 	ion_history_count_kick(true, len);
 #endif
-
-	handle->dbg.user_ts = end;
-	do_div(handle->dbg.user_ts, 1000000);
-	memcpy(buffer->alloc_dbg, client->dbg_name, ION_MM_DBG_NAME_LEN);
 
 	task_cputime(current, &utime, &stime_e);
 	stime_d = stime_e - stime_s;
@@ -2784,32 +2783,21 @@ struct ion_buffer *ion_drv_file_to_buffer(struct file *file)
 {
 	struct dma_buf *dmabuf;
 	struct ion_buffer *buffer = NULL;
-	const char *pathname = NULL;
 
-	if (!file)
-		goto file2buf_exit;
-	if (!(file->f_path.dentry))
-		goto file2buf_exit;
+	if (!file || !is_dma_buf_file(file))
+		return ERR_PTR(-EINVAL);
 
-	pathname = file->f_path.dentry->d_name.name;
-	if (!pathname)
-		goto file2buf_exit;
-
-	if (strstr(pathname, "dmabuf")) {
-		dmabuf = file->private_data;
-		if (!dmabuf) {
-			IONMSG("%s warnning, dmabuf is NULL\n", __func__);
-			goto file2buf_exit;
-		}
-		if (dmabuf->ops == &dma_buf_ops)
-			buffer = dmabuf->priv;
+	dmabuf = file->private_data;
+	if (!dmabuf) {
+		IONMSG("%s warnning, dmabuf is NULL\n", __func__);
+		return ERR_PTR(-EINVAL);
+	}
+	if (dmabuf->ops == &dma_buf_ops) {
+		buffer = dmabuf->priv;
+		return buffer;
 	}
 
-file2buf_exit:
-	if (buffer)
-		return buffer;
-	else
-		return ERR_PTR(-EINVAL);
+	return ERR_PTR(-EINVAL);
 }
 
 /* ===================================== */
